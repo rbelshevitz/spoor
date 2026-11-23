@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -98,11 +99,33 @@ type Snapshot struct {
 	Containers []Container `json:"containers"`
 }
 
+type EvidenceItem struct {
+	Fact       string `json:"fact"`
+	Value      string `json:"value"`
+	Source     string `json:"source"`
+	Confidence string `json:"confidence"`
+}
+
+type BlastRadius struct {
+	PID         int       `json:"pid"`
+	Descendants []Process `json:"descendants,omitempty"`
+	Sockets     []Port    `json:"sockets,omitempty"`
+	Cgroup      string    `json:"cgroup,omitempty"`
+}
+
+type Investigation struct {
+	Focus       *Process       `json:"focus,omitempty"`
+	Ancestry    []Process      `json:"ancestry,omitempty"`
+	BlastRadius *BlastRadius   `json:"blast_radius,omitempty"`
+	Evidence    []EvidenceItem `json:"evidence,omitempty"`
+}
+
 func main() {
 	pid := flag.Int("pid", 0, "focus a PID")
 	port := flag.Int("port", 0, "focus a port")
 	jsonOut := flag.Bool("json", false, "print a machine-readable snapshot")
 	htmlOut := flag.String("html", "", "write a human-readable HTML report")
+	bundleOut := flag.String("bundle", "", "write a redacted JSON, HTML, and Markdown incident bundle")
 	interval := flag.Duration("interval", 2*time.Second, "refresh interval")
 	flag.Parse()
 	if *jsonOut {
@@ -116,6 +139,14 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Println("wrote", *htmlOut)
+		return
+	}
+	if *bundleOut != "" {
+		if err := writeIncidentBundle(*bundleOut, collect(), *pid); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println("wrote", *bundleOut)
 		return
 	}
 	if *pid > 0 || *port > 0 {
@@ -414,9 +445,10 @@ func containers() []Container {
 func printJSON(s Snapshot, pid, port int) {
 	type report struct {
 		Snapshot
-		Focus    *Process  `json:"focus,omitempty"`
-		Port     *Port     `json:"port,omitempty"`
-		Ancestry []Process `json:"ancestry,omitempty"`
+		Focus         *Process       `json:"focus,omitempty"`
+		Port          *Port          `json:"port,omitempty"`
+		Ancestry      []Process      `json:"ancestry,omitempty"`
+		Investigation *Investigation `json:"investigation,omitempty"`
 	}
 	r := report{Snapshot: s}
 	if pid > 0 {
@@ -424,6 +456,7 @@ func printJSON(s Snapshot, pid, port int) {
 			if p.PID == pid {
 				r.Focus = &p
 				r.Ancestry = ancestry(s.Processes, pid)
+				r.Investigation = buildInvestigation(s, pid)
 				break
 			}
 		}
@@ -438,6 +471,68 @@ func printJSON(s Snapshot, pid, port int) {
 	}
 	b, _ := json.MarshalIndent(r, "", "  ")
 	fmt.Println(string(b))
+}
+
+func buildInvestigation(s Snapshot, pid int) *Investigation {
+	var focus *Process
+	for i := range s.Processes {
+		if s.Processes[i].PID == pid {
+			p := s.Processes[i]
+			focus = &p
+			break
+		}
+	}
+	if focus == nil {
+		return nil
+	}
+	children := descendants(s.Processes, pid)
+	sockets := make([]Port, 0)
+	for _, port := range s.Ports {
+		if port.PID == strconv.Itoa(pid) {
+			sockets = append(sockets, port)
+		}
+	}
+	evidence := []EvidenceItem{
+		{Fact: "process identity", Value: fmt.Sprintf("pid=%d starttime=%d", focus.PID, focus.StartTime), Source: fmt.Sprintf("/proc/%d/stat", pid), Confidence: "confirmed"},
+		{Fact: "parent process", Value: fmt.Sprintf("pid=%d", focus.PPID), Source: fmt.Sprintf("/proc/%d/stat", pid), Confidence: "confirmed"},
+	}
+	if focus.Cgroup != "" {
+		evidence = append(evidence, EvidenceItem{Fact: "cgroup membership", Value: focus.Cgroup, Source: fmt.Sprintf("/proc/%d/cgroup", pid), Confidence: "confirmed"})
+	} else {
+		evidence = append(evidence, EvidenceItem{Fact: "cgroup membership", Value: "not visible", Source: fmt.Sprintf("/proc/%d/cgroup", pid), Confidence: "unknown"})
+	}
+	socketConfidence := "confirmed"
+	if len(sockets) == 0 {
+		socketConfidence = "unknown"
+	}
+	evidence = append(evidence, EvidenceItem{Fact: "owned TCP sockets", Value: fmt.Sprintf("%d visible", len(sockets)), Source: fmt.Sprintf("/proc/%d/fd + /proc/net/tcp*", pid), Confidence: socketConfidence})
+	return &Investigation{
+		Focus: focus, Ancestry: ancestry(s.Processes, pid),
+		BlastRadius: &BlastRadius{PID: pid, Descendants: children, Sockets: sockets, Cgroup: focus.Cgroup},
+		Evidence:    evidence,
+	}
+}
+
+func descendants(ps []Process, pid int) []Process {
+	children := make(map[int][]Process)
+	for _, p := range ps {
+		children[p.PPID] = append(children[p.PPID], p)
+	}
+	var out []Process
+	seen := map[int]bool{pid: true}
+	var walk func(int)
+	walk = func(parent int) {
+		for _, child := range children[parent] {
+			if seen[child.PID] {
+				continue
+			}
+			seen[child.PID] = true
+			out = append(out, child)
+			walk(child.PID)
+		}
+	}
+	walk(pid)
+	return out
 }
 func ancestry(ps []Process, pid int) []Process {
 	by := map[int]Process{}
@@ -776,6 +871,16 @@ func (u *ui) handle(k string) bool {
 			u.status = "HTML export failed: " + err.Error()
 		} else {
 			u.status = "exported spoor-report.html"
+		}
+	case "b":
+		pid := 0
+		if p, ok := u.selectedProcess(); ok && u.tab == 0 {
+			pid = p.PID
+		}
+		if err := writeIncidentBundle("spoor-incident", u.snap, pid); err != nil {
+			u.status = "bundle export failed: " + err.Error()
+		} else {
+			u.status = "exported spoor-incident/ (redacted)"
 		}
 	}
 	u.normalize()
@@ -1422,6 +1527,17 @@ func (u *ui) drawDetail() {
 	} else {
 		fmt.Printf("\n  %s\n", dim("related sockets: none visible"))
 	}
+	if investigation := buildInvestigation(u.snap, p.PID); investigation != nil {
+		fmt.Printf("\n  %s\n", dim(fmt.Sprintf("blast radius · %d descendants · %d visible TCP sockets", len(investigation.BlastRadius.Descendants), len(investigation.BlastRadius.Sockets))))
+		for _, item := range investigation.Evidence {
+			confidence := item.Confidence
+			color := green
+			if confidence == "unknown" {
+				color = yellow
+			}
+			fmt.Printf("  %s %-20s %s\n", accent(strings.ToUpper(confidence), color), item.Fact, dim(item.Value+" · "+item.Source))
+		}
+	}
 	if u.confirm {
 		fmt.Printf("\n  %s terminate PID %d (%s)? %s\n", accent("!", yellow), p.PID, p.Name, dim("y confirm / n cancel"))
 	}
@@ -1569,6 +1685,7 @@ func (u *ui) help() {
 	printHelpRow("r", "request a fresh snapshot without blocking the UI")
 	printHelpRow("e", "export the current snapshot to spoor-snapshot.json")
 	printHelpRow("h", "export a human-readable report to spoor-report.html")
+	printHelpRow("b", "export a redacted incident bundle to spoor-incident/")
 	fmt.Printf("  %s\n", dim("JSON is for jq, scripts, CI and agents; it contains the same snapshot without ANSI UI noise."))
 	fmt.Printf("  %s\n", dim("Example: ./spoor --pid 1234 --json | jq '.ancestry'"))
 	fmt.Println()
@@ -1653,6 +1770,81 @@ func writeHTMLReport(path string, snapshot Snapshot) error {
 	_, err = f.WriteString(html)
 	return err
 }
+
+var secretPattern = regexp.MustCompile(`(?i)\b(password|passwd|token|secret|api[_-]?key|authorization|bearer)(\s*[=:]\s*|\s+)([^\s,;]+)`)
+
+func redactText(value string) string {
+	value = secretPattern.ReplaceAllString(value, `${1}${2}[REDACTED]`)
+	value = strings.ReplaceAll(value, "-----BEGIN PRIVATE KEY-----", "-----BEGIN PRIVATE KEY-----[REDACTED]")
+	return value
+}
+
+func markdownCell(value string, limit int) string {
+	value = redactText(value)
+	value = strings.ReplaceAll(value, "\n", " ")
+	value = strings.ReplaceAll(value, "|", "\\|")
+	return trim(value, limit)
+}
+
+func redactedSnapshot(snapshot Snapshot) Snapshot {
+	copy := snapshot
+	copy.Processes = append([]Process(nil), snapshot.Processes...)
+	for i := range copy.Processes {
+		copy.Processes[i].Cmd = redactText(copy.Processes[i].Cmd)
+	}
+	return copy
+}
+
+func writeIncidentBundle(dir string, snapshot Snapshot, pid int) error {
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	snapshot = redactedSnapshot(snapshot)
+	b, err := json.MarshalIndent(snapshot, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "snapshot.json"), b, 0644); err != nil {
+		return err
+	}
+	if err := writeHTMLReport(filepath.Join(dir, "report.html"), snapshot); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "incident.md"), []byte(incidentMarkdown(snapshot, pid)), 0644)
+}
+
+func incidentMarkdown(snapshot Snapshot, pid int) string {
+	var out strings.Builder
+	fmt.Fprintf(&out, "# spoor incident snapshot\n\nCaptured: `%s`  \nAccess: `%s`\n\n", snapshot.At.Format(time.RFC3339), snapshot.Access)
+	fmt.Fprintf(&out, "## Summary\n\n- Processes: %d\n- TCP sockets: %d\n- Containers: %d\n- PSI CPU / memory / I/O: %.1f%% / %.1f%% / %.1f%%\n\n", len(snapshot.Processes), len(snapshot.Ports), len(snapshot.Containers), snapshot.Pressure.CPU, snapshot.Pressure.Memory, snapshot.Pressure.IO)
+	if !strings.HasPrefix(snapshot.Access, "ROOT") {
+		out.WriteString("> [!WARNING]\n> Visibility is limited because spoor is not running as root.\n\n")
+	}
+	if pid > 0 {
+		if investigation := buildInvestigation(snapshot, pid); investigation != nil {
+			p := investigation.Focus
+			fmt.Fprintf(&out, "## Focus: `%s` (PID %d)\n\n", p.Name, p.PID)
+			fmt.Fprintf(&out, "Command: `%s`  \nCgroup: `%s`  \nDescendants: %d  \nVisible TCP sockets: %d\n\n", redactText(p.Cmd), p.Cgroup, len(investigation.BlastRadius.Descendants), len(investigation.BlastRadius.Sockets))
+			out.WriteString("### Evidence\n\n| Confidence | Fact | Value | Source |\n| --- | --- | --- | --- |\n")
+			for _, item := range investigation.Evidence {
+				fmt.Fprintf(&out, "| %s | %s | %s | `%s` |\n", markdownCell(item.Confidence, 32), markdownCell(item.Fact, 80), markdownCell(item.Value, 180), markdownCell(item.Source, 120))
+			}
+			out.WriteString("\n")
+		}
+	}
+	out.WriteString("## Largest processes by RSS\n\n| PID | Process | User | State | RSS | Command |\n| ---: | --- | --- | --- | ---: | --- |\n")
+	top := append([]Process(nil), snapshot.Processes...)
+	sort.Slice(top, func(i, j int) bool { return top[i].RSSBytes > top[j].RSSBytes })
+	if len(top) > 10 {
+		top = top[:10]
+	}
+	for _, p := range top {
+		fmt.Fprintf(&out, "| %d | %s | %s | %s | %s | `%s` |\n", p.PID, markdownCell(p.Name, 48), markdownCell(p.User, 32), markdownCell(p.State, 16), markdownCell(p.RSS, 16), markdownCell(p.Cmd, 180))
+	}
+	out.WriteString("\nGenerated by spoor. Command lines in this bundle were redacted conservatively.\n")
+	return out.String()
+}
+
 func readKey() string {
 	if terminalInput != nil && !ttyReady() {
 		return ""

@@ -1,4 +1,5 @@
 /spoor
 /spoor-snapshot.json
 /spoor-report.html
+/spoor-incident/
 *.log

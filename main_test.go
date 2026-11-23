@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestProcessSortKeepsPinnedProcessFirst(t *testing.T) {
 	u := &ui{sortBy: 1, pinnedPID: 42, snap: Snapshot{Processes: []Process{
@@ -68,5 +71,15 @@ func TestEscapeKeyRecognizesFunctionKeyVariants(t *testing.T) {
 		if got := escapeKey(sequence); got != want {
 			t.Errorf("escapeKey(%q) = %q, want %q", sequence, got, want)
 		}
+	}
+}
+
+func TestRedactText(t *testing.T) {
+	got := redactText("--token abc123 password=secret Bearer xyz")
+	if strings.Contains(got, "abc123") || strings.Contains(got, "secret") || strings.Contains(got, "xyz") {
+		t.Fatalf("redactText leaked a secret: %q", got)
+	}
+	if !strings.Contains(got, "[REDACTED]") {
+		t.Fatalf("redactText() = %q", got)
 	}
 }

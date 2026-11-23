@@ -64,6 +64,7 @@ The Containers view appears only when Docker or Podman containers are detected.
 | `r` | Request an immediate refresh |
 | `e` | Export `spoor-snapshot.json` |
 | `h` | Export `spoor-report.html` |
+| `b` | Export a redacted `spoor-incident/` bundle |
 | `q` | Quit and restore the terminal |
 
 Search is case-insensitive substring matching. It updates after every character and searches the fields of the current view. Examples: `/nginx`, `/8080`, `/listen`.
@@ -96,9 +97,12 @@ The HTML export is for humans and incident sharing:
 
 ```bash
 ./spoor --html incident.html
+./spoor --bundle incident-2026-11-23 --pid 1234
 ```
 
 It contains a static summary, access mode, PSI, the 30 largest processes by RSS, TCP sockets, and containers when present. Open it in any browser or attach it to an incident.
+
+`b` in the TUI or `--bundle <directory>` on the command line creates a redacted incident bundle containing `snapshot.json`, `report.html`, and `incident.md`. Command-line secrets such as tokens, passwords, bearer values, and API keys are replaced with `[REDACTED]` in the bundle.
 
 ## Usage
 
