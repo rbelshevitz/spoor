@@ -53,8 +53,8 @@ The Containers view appears only when Docker or Podman containers are detected.
 | `PgUp` `PgDn`, `Ctrl-U` `Ctrl-D` | Move one page |
 | `g` / `G` | First / last row |
 | `F1` / `?` | Help |
-| `F3` / `/` | Live search |
-| `F4` | Start search/filter mode |
+| `F3` / `/` | Search and jump to a matching row; keep all rows visible |
+| `F4` | Filter the current view and hide non-matching rows |
 | `F5` / `t` | Toggle process tree |
 | `F6` / `s` | Cycle sort order |
 | `m` | Sort by resident memory |
@@ -72,7 +72,7 @@ The Containers view appears only when Docker or Podman containers are detected.
 | `b` | Export a redacted `spoor-incident/` bundle |
 | `q` | Quit and restore the terminal |
 
-Search is case-insensitive substring matching. It updates after every character and searches the fields of the current view. Examples: `/nginx`, `/8080`, `/listen`.
+Search and filtering are case-insensitive substring matching over the fields of the current view. `F3` / `/` keeps the list intact and moves the cursor to a match; `F4` hides non-matching rows. Both update after every character. Examples: `/nginx`, `/8080`, `/listen`.
 
 `SLEEP` means that a process is alive and waiting for an event; it is not an error state. The process CPU column is calculated from the change in `utime + stime` between snapshots. The top CPU meter is host-wide and comes from `/proc/stat`. Each process CPU bar block represents roughly 12.5% of one core.
 
@@ -150,6 +150,18 @@ Planned extensions:
 - JSON as a stable integration surface.
 
 The current implementation is Linux-first. Visibility of other users' processes, file descriptors, and sockets depends on kernel permissions. Run as root when full visibility is required.
+
+## Further reading
+
+`spoor` is built around a few Linux primitives. These are the best sources for understanding what the numbers and relationships mean:
+
+- [The `/proc` filesystem](https://man7.org/linux/man-pages/man5/proc.5.html) — the map of process and kernel state exposed to userspace.
+- [`/proc/<pid>/stat`](https://man7.org/linux/man-pages/man5/proc_pid_stat.5.html) — process state, CPU time, RSS, thread count, and `starttime`, which is useful for detecting PID reuse.
+- [`/proc/<pid>/fd`](https://www.man7.org/linux/man-pages/man5/proc_pid_fd.5.html) — how file descriptors link a process to socket inodes and other kernel objects.
+- [`/proc/stat`](https://man7.org/linux/man-pages/man5/proc_stat.5.html) — the source for host-wide CPU accounting.
+- [Pressure Stall Information (PSI)](https://www.kernel.org/doc/html/latest/accounting/psi.html) — why CPU, memory, or I/O pressure can make a machine feel slow even when utilization is not saturated.
+- [Control Group v2](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html) — the hierarchy behind resource boundaries and much of the container/systemd context.
+- [`systemd.service`](https://freedesktop.org/software/systemd/man/latest/systemd.service.html) — restart policies, main PIDs, and the supervisor semantics behind many long-running processes.
 
 ## Русская версия
 

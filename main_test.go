@@ -32,6 +32,35 @@ func TestProcessSortByCPUUsesPIDAsTieBreaker(t *testing.T) {
 	}
 }
 
+func TestSearchDoesNotHideRowsButFilterDoes(t *testing.T) {
+	u := &ui{snap: Snapshot{Processes: []Process{
+		{PID: 1, Name: "nginx", Cmd: "nginx", State: "S"},
+		{PID: 2, Name: "postgres", Cmd: "postgres", State: "S"},
+	}}}
+	if got := len(u.processRows()); got != 2 {
+		t.Fatalf("unfiltered rows = %d, want 2", got)
+	}
+	u.searchTerm = "nginx"
+	if got := len(u.processRows()); got != 2 {
+		t.Fatalf("search changed visible row count to %d", got)
+	}
+	u.filter = "nginx"
+	if got := len(u.processRows()); got != 1 {
+		t.Fatalf("filtered rows = %d, want 1", got)
+	}
+}
+
+func TestFilterIncludesMatchingIdleProcesses(t *testing.T) {
+	u := &ui{filter: "worker", snap: Snapshot{Processes: []Process{
+		{PID: 1, Name: "kworker/0:1", Cmd: "kworker/0:1", State: "I"},
+		{PID: 2, Name: "worker", Cmd: "worker", State: "S"},
+		{PID: 3, Name: "bash", Cmd: "bash", State: "S"},
+	}}}
+	if got := len(u.processRows()); got != 2 {
+		t.Fatalf("filtered idle matches = %d, want 2", got)
+	}
+}
+
 func TestCPUTextHasStableVisibleWidth(t *testing.T) {
 	for _, value := range []float64{0, 1.2, 99.9, 100} {
 		if got := utf8.RuneCountInString(cpuText(value)); got != 15 {

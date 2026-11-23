@@ -612,6 +612,8 @@ type ui struct {
 	offset           int
 	pinnedPID        int
 	filter           string
+	searchTerm       string
+	searchMode       string
 	sortBy           int
 	detail           *Process
 	confirm          bool
@@ -800,14 +802,16 @@ func (u *ui) handle(k string) bool {
 	case "q":
 		return true
 	case "esc":
-		if u.filter != "" {
+		if u.filter != "" || u.searchTerm != "" {
 			u.filter = ""
+			u.searchTerm = ""
 			u.cursor, u.offset = 0, 0
 			break
 		}
 		return true
 	case "tab":
 		u.tab = (u.tab + 1) % u.tabCount()
+		u.filter, u.searchTerm = "", ""
 		u.cursor = 0
 		u.offset = 0
 	case "1", "2", "3":
@@ -817,6 +821,7 @@ func (u *ui) handle(k string) bool {
 			u.tab = u.tabCount() - 1
 		}
 		u.cursor, u.offset = 0, 0
+		u.filter, u.searchTerm = "", ""
 	case "up", "k":
 		u.cursor--
 	case "down", "j":
@@ -859,8 +864,10 @@ func (u *ui) handle(k string) bool {
 	case "?":
 		u.help()
 		return false
-	case "/", "f3", "f4":
-		u.searchInteractive()
+	case "/", "f3":
+		u.searchInteractive("search")
+	case "f4":
+		u.searchInteractive("filter")
 	case "f1":
 		u.help()
 		return false
@@ -889,6 +896,7 @@ func (u *ui) handle(k string) bool {
 			pid := u.detail.PID
 			u.tab = 1
 			u.filter = strconv.Itoa(pid)
+			u.searchTerm = ""
 			u.detail = nil
 			u.confirm = false
 			u.cursor, u.offset = 0, 0
@@ -1008,7 +1016,9 @@ func (u *ui) normalize() {
 func (u *ui) processRows() []Process {
 	rows := make([]Process, 0, len(u.snap.Processes))
 	for _, p := range u.snap.Processes {
-		if p.State == "I" && !u.showIdle {
+		// An explicit filter is an investigation request: do not hide a
+		// matching idle kernel thread just because the default view is compact.
+		if p.State == "I" && !u.showIdle && u.filter == "" {
 			continue
 		}
 		if !match(fmt.Sprintf("%d %s %s %s %s %.1f", p.PID, p.User, p.Name, p.Cmd, p.State, p.CPUPercent), u.filter) {
@@ -1020,6 +1030,10 @@ func (u *ui) processRows() []Process {
 		rows = append(rows, p)
 	}
 	return rows
+}
+
+func (u *ui) processMatchesSearch(p Process, query string) bool {
+	return match(fmt.Sprintf("%d %s %s %s %s %.1f", p.PID, p.User, p.Name, p.Cmd, p.State, p.CPUPercent), query)
 }
 
 type processDisplayRow struct {
@@ -1130,12 +1144,23 @@ func (u *ui) searchFields() string {
 	return "visible fields"
 }
 
-func (u *ui) searchInteractive() {
+func (u *ui) searchInteractive(mode string) {
 	u.searching = true
+	u.searchMode = mode
 	query := u.filter
+	if mode == "search" {
+		query = u.searchTerm
+		u.filter = ""
+	} else {
+		u.searchTerm = ""
+	}
 	for {
-		u.filter = query
-		u.cursor, u.offset = 0, 0
+		if mode == "filter" {
+			u.filter = query
+		} else {
+			u.searchTerm = query
+			u.jumpToSearch(query)
+		}
 		u.draw()
 		k := ""
 		for k == "" {
@@ -1147,10 +1172,16 @@ func (u *ui) searchInteractive() {
 		switch k {
 		case "enter":
 			u.searching = false
+			u.searchMode = ""
 			return
 		case "esc":
-			u.filter = ""
+			if mode == "filter" {
+				u.filter = ""
+			} else {
+				u.searchTerm = ""
+			}
 			u.searching = false
+			u.searchMode = ""
 			return
 		case "backspace":
 			runes := []rune(query)
@@ -1170,6 +1201,36 @@ func (u *ui) searchInteractive() {
 			// navigation words are ignored while search is active.
 			if len(k) == 1 && k[0] >= 32 && k[0] != 127 {
 				query += k
+			}
+		}
+	}
+}
+
+func (u *ui) jumpToSearch(query string) {
+	if query == "" {
+		u.cursor, u.offset = 0, 0
+		return
+	}
+	switch u.tab {
+	case 0:
+		for i, row := range u.displayProcessRows() {
+			if u.processMatchesSearch(row.Process, query) {
+				u.cursor, u.offset = i, 0
+				return
+			}
+		}
+	case 1:
+		for i, row := range u.snap.Ports {
+			if match(fmt.Sprintf("%s %s %s %s %s", row.Proto, row.Local, row.State, row.PID, row.Process), query) {
+				u.cursor, u.offset = i, 0
+				return
+			}
+		}
+	case 2:
+		for i, row := range u.snap.Containers {
+			if match(fmt.Sprintf("%s %s %s %s %s", row.Runtime, row.ID, row.Name, row.Image, row.Status), query) {
+				u.cursor, u.offset = i, 0
+				return
 			}
 		}
 	}
@@ -1299,9 +1360,15 @@ func (u *ui) draw() {
 	}
 	fmt.Printf("   %s\n", dim("1/2/3 or Tab"))
 	if u.filter != "" {
-		fmt.Printf("  %s %s  %s\n", accent("SEARCH", yellow), accent("/"+u.filter, yellow), dim("substring · case-insensitive · "+u.searchFields()))
+		fmt.Printf("  %s %s  %s\n", accent("FILTER", yellow), accent("/"+u.filter, yellow), dim("hides non-matches · "+u.searchFields()))
+	} else if u.searchTerm != "" {
+		fmt.Printf("  %s %s  %s\n", accent("SEARCH", yellow), accent("/"+u.searchTerm, yellow), dim("jumps to a match · "+u.searchFields()))
 	} else if u.searching {
-		fmt.Printf("  %s  %s\n", accent("SEARCH", yellow), dim("type to filter "+u.searchFields()+" · Enter keep · Esc clear"))
+		label, action := "SEARCH", "jump to a match"
+		if u.searchMode == "filter" {
+			label, action = "FILTER", "hide non-matches"
+		}
+		fmt.Printf("  %s  %s\n", accent(label, yellow), dim("type to "+action+" "+u.searchFields()+" · Enter keep · Esc clear"))
 	}
 	if u.detail != nil {
 		u.drawDetail()
@@ -1779,8 +1846,8 @@ func (u *ui) help() {
 	fmt.Println()
 
 	fmt.Printf("  %s\n", accent("SEARCH", yellow))
-	printHelpRow("F3 / /", "start live search; results update after every character")
-	printHelpRow("F4", "start the same search as a process filter")
+	printHelpRow("F3 / /", "search and jump to the next matching row")
+	printHelpRow("F4", "filter the current view; hide non-matching rows")
 	printHelpRow("Backspace", "remove the last character")
 	printHelpRow("Enter", "keep the query")
 	printHelpRow("Esc", "clear the query")
