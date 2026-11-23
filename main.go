@@ -20,7 +20,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -77,6 +76,9 @@ type SystemStats struct {
 	Load5        float64 `json:"load5,omitempty"`
 	Load15       float64 `json:"load15,omitempty"`
 	Uptime       float64 `json:"uptime_seconds,omitempty"`
+	CPUPercent   float64 `json:"cpu_percent,omitempty"`
+	CPUTotal     uint64  `json:"-"`
+	CPUIdle      uint64  `json:"-"`
 }
 type TimelinePoint struct {
 	At        time.Time `json:"at"`
@@ -197,6 +199,27 @@ func systemStats() SystemStats {
 		fields := strings.Fields(string(b))
 		if len(fields) > 0 {
 			stats.Uptime, _ = strconv.ParseFloat(fields[0], 64)
+		}
+	}
+	if b, err := os.ReadFile("/proc/stat"); err == nil {
+		for _, line := range strings.Split(string(b), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 5 || fields[0] != "cpu" {
+				continue
+			}
+			for i := 1; i < len(fields); i++ {
+				tick, parseErr := strconv.ParseUint(fields[i], 10, 64)
+				if parseErr == nil {
+					stats.CPUTotal += tick
+				}
+			}
+			// idle and iowait are both non-working time for a host meter.
+			stats.CPUIdle, _ = strconv.ParseUint(fields[4], 10, 64)
+			if len(fields) > 5 {
+				iowait, _ := strconv.ParseUint(fields[5], 10, 64)
+				stats.CPUIdle += iowait
+			}
+			break
 		}
 	}
 	return stats
@@ -653,9 +676,15 @@ func (u *ui) refresh() {
 }
 
 func (u *ui) applySnapshot(snapshot Snapshot) {
+	selectedPID := 0
+	if u.tab == 0 {
+		if p, ok := u.selectedProcess(); ok {
+			selectedPID = p.PID
+		}
+	}
 	if !u.snap.At.IsZero() {
 		annotateCPU(&snapshot, u.snap)
-		u.cpuReady = true
+		u.cpuReady = annotateSystemCPU(&snapshot, u.snap)
 	}
 	if !u.snap.At.IsZero() {
 		newCount, goneCount, restartCount := diffCounts(u.snap.Processes, snapshot.Processes)
@@ -675,6 +704,14 @@ func (u *ui) applySnapshot(snapshot Snapshot) {
 	// A background refresh must preserve the user's selected ordering.
 	// Otherwise memory mode appears to disappear every interval.
 	u.sort()
+	if selectedPID != 0 && u.tab == 0 {
+		for i, row := range u.displayProcessRows() {
+			if row.PID == selectedPID {
+				u.cursor = i
+				break
+			}
+		}
+	}
 	if u.base.At.IsZero() {
 		u.base = u.snap
 	}
@@ -706,6 +743,19 @@ func annotateCPU(snapshot *Snapshot, previous Snapshot) {
 			p.RSSRate = float64(p.RSSDelta) / elapsed
 		}
 	}
+}
+
+func annotateSystemCPU(snapshot *Snapshot, previous Snapshot) bool {
+	if snapshot.System.CPUTotal <= previous.System.CPUTotal || snapshot.System.CPUIdle < previous.System.CPUIdle {
+		return false
+	}
+	totalDelta := snapshot.System.CPUTotal - previous.System.CPUTotal
+	idleDelta := snapshot.System.CPUIdle - previous.System.CPUIdle
+	if idleDelta > totalDelta {
+		idleDelta = totalDelta
+	}
+	snapshot.System.CPUPercent = float64(totalDelta-idleDelta) / float64(totalDelta) * 100
+	return true
 }
 func (u *ui) count() int {
 	switch u.tab {
@@ -834,6 +884,16 @@ func (u *ui) handle(k string) bool {
 		if u.detail != nil {
 			u.confirm = true
 		}
+	case "o":
+		if u.detail != nil {
+			pid := u.detail.PID
+			u.tab = 1
+			u.filter = strconv.Itoa(pid)
+			u.detail = nil
+			u.confirm = false
+			u.cursor, u.offset = 0, 0
+			u.status = fmt.Sprintf("showing sockets for PID %d · Esc clears filter", pid)
+		}
 	case "s":
 		u.sortBy = (u.sortBy + 1) % 5
 		u.sort()
@@ -889,9 +949,16 @@ func (u *ui) handle(k string) bool {
 }
 
 func (u *ui) listHeight() int {
-	h := u.height - 21
-	if h < 6 {
-		return 6
+	// The process screen has a detail/legend footer and therefore needs more
+	// reserved space than ports or containers. If this is not accounted for,
+	// a full process page makes the terminal scroll and hides the meters above.
+	overhead := 10
+	if u.tab == 0 && u.detail == nil && !u.timelineMode {
+		overhead = 13
+	}
+	h := u.height - overhead
+	if h < 4 {
+		return 4
 	}
 	if h > 24 {
 		return 24
@@ -1182,7 +1249,11 @@ func processStateRank(state string) int {
 }
 func (u *ui) draw() {
 	u.width, u.height = terminalSize()
-	fmt.Print("\x1b[2J\x1b[H\x1b[?25l")
+	// DEC synchronized output makes the complete frame appear atomically on
+	// terminals that support it. The cursor-home + erase sequence also avoids
+	// scrolling when the selected row changes near the bottom of the list.
+	fmt.Print("\x1b[?2026h\x1b[?25l\x1b[H\x1b[0J")
+	defer fmt.Print("\x1b[?2026l")
 	mode := "live / procfs"
 	if u.diff {
 		mode = "incident diff · d to exit"
@@ -1206,7 +1277,6 @@ func (u *ui) draw() {
 	if !strings.HasPrefix(u.snap.Access, "ROOT") {
 		fmt.Printf("  %s\n", dim("limited visibility: processes and file descriptors owned by other users may be hidden"))
 	}
-	fmt.Printf("%s\n", rule(u.screenWidth()))
 	tabs := []string{"PROCESSES", "PORTS"}
 	if len(u.snap.Containers) > 0 {
 		tabs = append(tabs, "CONTAINERS")
@@ -1218,20 +1288,11 @@ func (u *ui) draw() {
 			fmt.Printf("   %s   ", dim(fmt.Sprintf("[%d] %s", i+1, t)))
 		}
 	}
-	fmt.Printf("   %s\n%s\n", dim("1/2/3 or Tab"), rule(u.screenWidth()))
+	fmt.Printf("   %s\n", dim("1/2/3 or Tab"))
 	if u.filter != "" {
 		fmt.Printf("  %s %s  %s\n", accent("SEARCH", yellow), accent("/"+u.filter, yellow), dim("substring · case-insensitive · "+u.searchFields()))
 	} else if u.searching {
 		fmt.Printf("  %s  %s\n", accent("SEARCH", yellow), dim("type to filter "+u.searchFields()+" · Enter keep · Esc clear"))
-	} else {
-		fmt.Printf("  %s\n", dim("Search: press / · substring, case-insensitive · "+u.searchFields()))
-	}
-	if u.tab == 0 {
-		view := "flat"
-		if u.treeMode {
-			view = "tree"
-		}
-		fmt.Printf("  %s\n", dim("process view: "+view+" · order: "+u.sortLabel()+" · F6/s change"))
 	}
 	if u.detail != nil {
 		u.drawDetail()
@@ -1249,7 +1310,6 @@ func (u *ui) draw() {
 	case 2:
 		u.drawContainers()
 	}
-	fmt.Printf("\n%s\n", rule(u.screenWidth()))
 	u.drawKeyBar()
 	if u.status != "" {
 		fmt.Printf("  %s %s\n", accent("STATUS", green), u.status)
@@ -1273,15 +1333,21 @@ func (u *ui) drawKeyBar() {
 func (u *ui) drawMeters() {
 	if u.snap.System.MemTotal > 0 {
 		used := u.snap.System.MemTotal - u.snap.System.MemAvailable
-		fmt.Printf("  %-5s %s %s   %-5s %s %s\n", "MEM", meter(float64(used)/float64(u.snap.System.MemTotal), cyan), fmt.Sprintf("%s / %s", formatBytes(used), formatBytes(u.snap.System.MemTotal)), "SWAP", meter(swapRatio(u.snap.System), yellow), fmt.Sprintf("%s / %s", formatBytes(u.snap.System.SwapTotal-u.snap.System.SwapFree), formatBytes(u.snap.System.SwapTotal)))
+		memoryRatio := float64(used) / float64(u.snap.System.MemTotal)
+		availableRatio := float64(u.snap.System.MemAvailable) / float64(u.snap.System.MemTotal)
+		fmt.Printf("  %-5s %s %s\n", "RAM", meter(memoryRatio, memoryBarColor(availableRatio)), fmt.Sprintf("%s used · %s avail", formatBytes(used), formatBytes(u.snap.System.MemAvailable)))
+	} else {
+		fmt.Printf("  %-5s %s\n", "RAM", dim("unavailable"))
+	}
+	if u.snap.System.SwapTotal > 0 {
+		swap := swapRatio(u.snap.System)
+		fmt.Printf("  %-5s %s %s\n", "SWAP", meter(swap, swapBarColor(swap)), fmt.Sprintf("%s / %s", formatBytes(u.snap.System.SwapTotal-u.snap.System.SwapFree), formatBytes(u.snap.System.SwapTotal)))
+	} else {
+		fmt.Printf("  %-5s %s\n", "SWAP", dim("none configured"))
 	}
 	if u.cpuReady {
-		var total float64
-		for _, p := range u.snap.Processes {
-			total += p.CPUPercent
-		}
-		cpu := total / float64(runtime.NumCPU()) / 100
-		fmt.Printf("  %-5s %s %5.1f%%   %-5s load %.2f %.2f %.2f   up %s\n", "CPU", meter(cpu, green), cpu*100, "LOAD", u.snap.System.Load1, u.snap.System.Load5, u.snap.System.Load15, formatUptime(u.snap.System.Uptime))
+		cpu := u.snap.System.CPUPercent / 100
+		fmt.Printf("  %-5s %s %5.1f%%   %-5s load %.2f %.2f %.2f   up %s\n", "CPU", meter(cpu, cpuBarColor(cpu)), cpu*100, "LOAD", u.snap.System.Load1, u.snap.System.Load5, u.snap.System.Load15, formatUptime(u.snap.System.Uptime))
 	} else {
 		fmt.Printf("  %-5s %s   %s\n", "CPU", dim("sampling…"), dim("load "+formatUptime(u.snap.System.Uptime)))
 	}
@@ -1303,8 +1369,38 @@ func meter(ratio float64, color string) string {
 	}
 	width := 20
 	filled := int(ratio * float64(width))
-	bar := strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
-	return accent("["+bar+"]", color)
+	bar := accent(strings.Repeat("█", filled), color) + dim(strings.Repeat("░", width-filled))
+	return "[" + bar + "]"
+}
+
+func cpuBarColor(ratio float64) string {
+	if ratio >= 0.85 {
+		return red
+	}
+	if ratio >= 0.60 {
+		return yellow
+	}
+	return green
+}
+
+func memoryBarColor(availableRatio float64) string {
+	if availableRatio < 0.10 {
+		return red
+	}
+	if availableRatio < 0.20 {
+		return yellow
+	}
+	return cyan
+}
+
+func swapBarColor(ratio float64) string {
+	if ratio >= 0.75 {
+		return red
+	}
+	if ratio >= 0.25 {
+		return yellow
+	}
+	return cyan
 }
 
 func formatBytes(value int64) string {
@@ -1374,7 +1470,7 @@ func psiValue(value float64) string {
 }
 func (u *ui) drawProcesses() {
 	displayRows := u.displayProcessRows()
-	fmt.Printf("  %s %s %s %s %s %s %s %s %s\n", headerCell("PIN", 3), headerCell("TAG", 3), headerCell("PID", 7), headerCell("USER", 10), headerCell("PROCESS", 22), headerCell("CPU", 15), headerCell("RSS", 8), headerCell("STATE", 10), headerCell("COMMAND", 0))
+	fmt.Printf("    %s %s %s %s %s %s %s %s %s\n", headerCell("PIN", 3), headerCell("TAG", 3), headerCell("PID", 7), headerCell("USER", 10), headerCell("PROCESS", 22), headerCell("CPU", 15), headerCell("RSS", 8), headerCell("STATE", 10), headerCell("COMMAND", 0))
 	fmt.Printf("  %s\n", dim(rule(u.screenWidth()-2)))
 	end := u.offset + u.listHeight()
 	if end > len(displayRows) {
@@ -1398,14 +1494,15 @@ func (u *ui) drawProcesses() {
 			// is too easy to miss on dim terminals.
 			cpu := cpuText(p.CPUPercent)
 			memory := fmt.Sprintf("%-8s", p.RSS)
-			fmt.Printf("\x1b[1;7m▸ %-3s %-3s %-7d %-10s %-22s %s %s %s %s\x1b[0m\n",
-				pin, tag, p.PID, p.User, name, cpu, memory, stateLabel(p.State), trim(p.Cmd, u.commandWidth()))
+			// Keep two cells reserved for the selector so every numeric column
+			// stays fixed when the cursor moves.
+			fmt.Printf("\x1b[1;7m  ▸ %-3s %-3s %-7d %-10s %-22s %s %s %s %s\x1b[0m\n", pin, tag, p.PID, p.User, name, cpu, memory, stateLabel(p.State), trim(p.Cmd, u.commandWidth()))
 			continue
 		}
 		state := stateColor(p.State)
 		memory := memoryColor(p.RSS, p.RSSBytes, u.sortBy == 1)
 		cpu := cpuColor(p.CPUPercent)
-		fmt.Printf("  %-3s %-3s %-7d %-10s %-22s %s %s %s %s\n", pin, tag, p.PID, p.User, name, cpu, memory, state, dim(trim(p.Cmd, u.commandWidth())))
+		fmt.Printf("    %-3s %-3s %-7d %-10s %-22s %s %s %s %s\n", pin, tag, p.PID, p.User, name, cpu, memory, state, dim(trim(p.Cmd, u.commandWidth())))
 	}
 	if u.diff {
 		newCount, goneCount, restartCount := diffCounts(u.base.Processes, u.snap.Processes)
@@ -1415,20 +1512,8 @@ func (u *ui) drawProcesses() {
 		if u.showIdle {
 			idleNote = "idle kernel threads shown · i hide"
 		}
-		fmt.Printf("\n  %s\n", dim(fmt.Sprintf("%s · %d with children · %s", u.rangeText(len(displayRows)), countChildren(u.snap.Processes), idleNote)))
+		fmt.Printf("  %s\n", dim(fmt.Sprintf("%s · %d children · %s", u.rangeText(len(displayRows)), countChildren(u.snap.Processes), idleNote)))
 	}
-	if len(displayRows) > 0 && u.cursor < len(displayRows) {
-		p := displayRows[u.cursor].Process
-		trend := "memory stable"
-		if p.RSSDelta > 0 {
-			trend = "memory ↑ " + rateLabel(p.RSSRate)
-		} else if p.RSSDelta < 0 {
-			trend = "memory ↓ " + rateLabel(-p.RSSRate)
-		}
-		fmt.Printf("\n  %s  %s\n", accent("SELECTED", cyan), dim(fmt.Sprintf("PID %d · %s · parent %d · %s · %s", p.PID, p.Name, p.PPID, trend, u.rangeText(len(displayRows)))))
-		fmt.Printf("  %s\n", trim(p.Cmd, u.screenWidth()-2))
-	}
-	fmt.Printf("\n  %s\n", dim("STATE  "+stateLegend()+"   ·   CPU bar: each block ≈ 12.5% of one core"))
 }
 
 func treeName(row processDisplayRow) string {
@@ -1460,6 +1545,7 @@ func stateLabel(state string) string {
 func (u *ui) drawPorts() {
 	rows := u.portRows()
 	fmt.Printf("  %s %s %s %s %s\n", headerCell("PROTO", 8), headerCell("LOCAL", 24), headerCell("STATE", 14), headerCell("PID", 8), headerCell("PROCESS", 0))
+	fmt.Printf("  %s\n", dim(rule(u.screenWidth()-2)))
 	end := u.offset + u.listHeight()
 	if end > len(rows) {
 		end = len(rows)
@@ -1477,6 +1563,7 @@ func (u *ui) drawPorts() {
 func (u *ui) drawContainers() {
 	rows := u.containerRows()
 	fmt.Printf("  %s %s %s %s %s\n", headerCell("RUNTIME", 10), headerCell("NAME", 18), headerCell("IMAGE", 26), headerCell("STATUS", 24), headerCell("ID", 0))
+	fmt.Printf("  %s\n", dim(rule(u.screenWidth()-2)))
 	end := u.offset + u.listHeight()
 	if end > len(rows) {
 		end = len(rows)
@@ -1493,7 +1580,6 @@ func (u *ui) drawContainers() {
 }
 func (u *ui) drawDetail() {
 	p := *u.detail
-	fmt.Printf("  %s %s (pid %d)\n\n", accent("PROCESS", cyan), p.Name, p.PID)
 	trend := "stable"
 	if p.RSSDelta > 0 {
 		trend = "↑ " + rateLabel(p.RSSRate)
@@ -1504,44 +1590,49 @@ func (u *ui) drawDetail() {
 	if cgroup == "" {
 		cgroup = "not visible"
 	}
-	fmt.Printf("  %-12s %s\n  %-12s %s\n  %-12s %s (%s)\n  %-12s %s\n  %-12s %s\n\n", dim("user"), p.User, dim("state"), p.State, dim("memory"), p.RSS, trend, dim("cgroup"), cgroup, dim("command"), p.Cmd)
-	fmt.Printf("  %s\n", dim("causal chain"))
-	for i, a := range ancestry(u.snap.Processes, p.PID) {
-		glyph := "└─"
-		if i < len(ancestry(u.snap.Processes, p.PID))-1 {
-			glyph = "├─"
-		}
-		fmt.Printf("  %s %s %s\n", dim(glyph), accent(fmt.Sprint(a.PID), yellow), a.Cmd)
-	}
-	related := make([]Port, 0, 4)
-	for _, port := range u.snap.Ports {
-		if port.PID == strconv.Itoa(p.PID) {
-			related = append(related, port)
-		}
-	}
+	related := u.relatedPorts(p.PID)
+
+	fmt.Printf("  %s  %s  %s\n", accent("PROCESS", cyan), accent(p.Name, cyan), dim(fmt.Sprintf("PID %d", p.PID)))
+	fmt.Printf("  %s\n", dim(rule(u.screenWidth()-2)))
+	fmt.Printf("  %-10s %-18s %-10s %-18s\n", dim("USER"), p.User, dim("STATE"), stateLabel(p.State))
+	fmt.Printf("  %-10s %-18s %-10s %s\n", dim("RSS"), p.RSS, dim("TREND"), trend)
+	fmt.Printf("  %-10s %s\n", dim("CGROUP"), trim(cgroup, u.screenWidth()-14))
+	fmt.Printf("  %-10s %s\n\n", dim("COMMAND"), trim(p.Cmd, u.screenWidth()-14))
+
+	fmt.Printf("  %s  %s\n", accent("NETWORK", cyan), dim(fmt.Sprintf("%d visible TCP sockets", len(related))))
 	if len(related) > 0 {
-		fmt.Printf("\n  %s\n", dim("related sockets"))
+		fmt.Printf("  %s %s %s\n", headerCell("PROTO", 8), headerCell("STATE", 14), headerCell("LOCAL ADDRESS", 0))
 		for _, port := range related {
-			fmt.Printf("  %s %s %s\n", accent(port.Proto, cyan), port.Local, portStateColor(port.State))
+			fmt.Printf("  %-8s %s %s\n", port.Proto, portStateColor(port.State), trim(port.Local, u.screenWidth()-26))
 		}
 	} else {
-		fmt.Printf("\n  %s\n", dim("related sockets: none visible"))
+		fmt.Printf("  %s\n", dim("none visible (permissions may hide socket ownership)"))
 	}
+
 	if investigation := buildInvestigation(u.snap, p.PID); investigation != nil {
-		fmt.Printf("\n  %s\n", dim(fmt.Sprintf("blast radius · %d descendants · %d visible TCP sockets", len(investigation.BlastRadius.Descendants), len(investigation.BlastRadius.Sockets))))
+		confirmed := 0
 		for _, item := range investigation.Evidence {
-			confidence := item.Confidence
-			color := green
-			if confidence == "unknown" {
-				color = yellow
+			if item.Confidence == "confirmed" {
+				confirmed++
 			}
-			fmt.Printf("  %s %-20s %s\n", accent(strings.ToUpper(confidence), color), item.Fact, dim(item.Value+" · "+item.Source))
 		}
+		fmt.Printf("\n  %s  %s\n", accent("IMPACT", cyan), dim(fmt.Sprintf("%d descendants · %d visible TCP sockets · evidence %d/%d confirmed", len(investigation.BlastRadius.Descendants), len(investigation.BlastRadius.Sockets), confirmed, len(investigation.Evidence))))
 	}
 	if u.confirm {
 		fmt.Printf("\n  %s terminate PID %d (%s)? %s\n", accent("!", yellow), p.PID, p.Name, dim("y confirm / n cancel"))
 	}
-	fmt.Printf("\n  %s\n", dim("esc/enter back   x terminate (confirmation)"))
+	fmt.Printf("\n  %s\n", dim("Esc/Enter back   o open PID ports   x terminate"))
+}
+
+func (u *ui) relatedPorts(pid int) []Port {
+	want := strconv.Itoa(pid)
+	related := make([]Port, 0, 4)
+	for _, port := range u.snap.Ports {
+		if port.PID == want {
+			related = append(related, port)
+		}
+	}
+	return related
 }
 
 func badge(label, value, color string) string {
@@ -1576,13 +1667,8 @@ func stateColor(state string) string {
 }
 
 func cpuColor(value float64) string {
-	plain := fmt.Sprintf("%5.1f%%", value)
-	blocks := int(value / 12.5)
-	if blocks > 8 {
-		blocks = 8
-	}
-	bar := strings.Repeat("█", blocks) + strings.Repeat("░", 8-blocks)
-	text := fmt.Sprintf("%-15s", plain+" "+bar)
+	plain := cpuText(value)
+	text := fmt.Sprintf("%-15s", plain)
 	if value >= 100 {
 		return accent(text, red)
 	}
@@ -1596,7 +1682,15 @@ func cpuColor(value float64) string {
 }
 
 func cpuText(value float64) string {
-	return fmt.Sprintf("%-15s", fmt.Sprintf("%5.1f%%", value))
+	blocks := int(value / 12.5)
+	if blocks < 0 {
+		blocks = 0
+	}
+	if blocks > 8 {
+		blocks = 8
+	}
+	bar := strings.Repeat("█", blocks) + strings.Repeat("░", 8-blocks)
+	return fmt.Sprintf("%5.1f%% %s", value, bar)
 }
 
 func stateLegend() string {
@@ -1660,7 +1754,8 @@ func (u *ui) help() {
 	printHelpRow("F5 / t", "toggle process tree view")
 	printHelpRow("Space", "tag/untag the selected process")
 	printHelpRow("p", "pin/unpin the selected process at the top of the list")
-	printHelpRow("Enter", "inspect the selected process and its ancestry")
+	printHelpRow("Enter", "inspect process details and visible network sockets")
+	printHelpRow("o", "from detail, open Ports filtered to this PID")
 	printHelpRow("Esc", "clear search; from a detail view, go back")
 	fmt.Println()
 

@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestProcessSortKeepsPinnedProcessFirst(t *testing.T) {
@@ -33,7 +34,7 @@ func TestProcessSortByCPUUsesPIDAsTieBreaker(t *testing.T) {
 
 func TestCPUTextHasStableVisibleWidth(t *testing.T) {
 	for _, value := range []float64{0, 1.2, 99.9, 100} {
-		if got := len(cpuText(value)); got != 15 {
+		if got := utf8.RuneCountInString(cpuText(value)); got != 15 {
 			t.Fatalf("CPU text width for %.1f is %d, want 15", value, got)
 		}
 	}

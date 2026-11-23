@@ -15,13 +15,17 @@ The name `spoor` is Dutch for **“track”** or **“trail.”** Every process 
 
 `htop` is excellent at showing what is running. `spoor` is aimed at the next incident question: **what is holding this process here, what does it own, and is it changing?**
 
-The detail view connects:
+The process detail view shows:
 
-- the selected process and its ancestry;
+- the selected process identity and command;
 - its cgroup boundary, including systemd or container context when visible;
 - visible TCP sockets owned by the PID;
 - resident-memory growth or shrink rate;
-- process identity changes and restart events.
+- a compact impact summary.
+
+The full ancestry and evidence ledger remain available in JSON, HTML, and the
+redacted incident bundle, where they can be inspected without overcrowding the
+live process screen.
 
 The **PID identity radar** compares Linux process `starttime` rather than relying only on the numeric PID. It reports a confirmed identity change when the same numeric PID belongs to a different process between snapshots. This is a PID-reuse signal; it does not claim to know why a service restarted.
 
@@ -31,7 +35,7 @@ The main screen follows the familiar `htop` model: a live process list, visible 
 
 The top panel shows:
 
-- CPU usage, calculated from process CPU deltas;
+- host CPU usage, calculated from `/proc/stat` deltas;
 - RAM and swap meters;
 - load average and uptime;
 - Linux PSI pressure for CPU, memory, and I/O;
@@ -57,7 +61,8 @@ The Containers view appears only when Docker or Podman containers are detected.
 | `c` | Sort by CPU |
 | `Space` | Tag/untag a process |
 | `p` | Pin/unpin the selected process at the top |
-| `Enter` | Open process details and ancestry |
+| `Enter` | Open compact process details and visible sockets |
+| `o` | From process details, open Ports filtered by that PID |
 | `F9` / `x` | Prepare `TERM`; `y` confirms, `n` cancels |
 | `L` | Open the incident timeline |
 | `d` | Toggle incident diff from the startup baseline |
@@ -69,7 +74,7 @@ The Containers view appears only when Docker or Podman containers are detected.
 
 Search is case-insensitive substring matching. It updates after every character and searches the fields of the current view. Examples: `/nginx`, `/8080`, `/listen`.
 
-`SLEEP` means that a process is alive and waiting for an event; it is not an error state. The CPU column is calculated from the change in `utime + stime` between snapshots. Each CPU bar block represents roughly 12.5% of one core.
+`SLEEP` means that a process is alive and waiting for an event; it is not an error state. The process CPU column is calculated from the change in `utime + stime` between snapshots. The top CPU meter is host-wide and comes from `/proc/stat`. Each process CPU bar block represents roughly 12.5% of one core.
 
 ## Timeline and incident evidence
 
@@ -125,7 +130,7 @@ The goal is not to become another general-purpose resource monitor. The distinct
 Implemented today:
 
 - **Causal path:** process → parent → supervisor/cgroup/container → socket.
-- **Process context:** show the selected process's cgroup boundary, memory trend, ancestry, and visible TCP sockets.
+- **Process context:** show the selected process's cgroup boundary, memory trend, and visible TCP sockets without turning the live screen into a dependency graph.
 - **Blast radius:** show the selected process's descendants and visible TCP sockets.
 - **Evidence ledger:** label facts as confirmed or unknown and include their `/proc` source.
 - **PID identity radar:** detect process identity changes and PID reuse.
@@ -148,6 +153,6 @@ The current implementation is Linux-first. Visibility of other users' processes,
 
 ## Русская версия
 
-`spoor` — быстрый Linux TUI, который помогает понять, почему запущен процесс, кто его породил, какой cgroup или контейнер удерживает его живым и какие TCP-сокеты ему принадлежат. Название `spoor` по-нидерландски означает «след» или «трасса».
+`spoor` — быстрый Linux TUI, который помогает понять, почему запущен процесс, какой cgroup или контейнер удерживает его живым и какие TCP-сокеты ему принадлежат. Название `spoor` по-нидерландски означает «след» или «трасса».
 
-Главный экран сделан в парадигме `htop`: список процессов, индикаторы ресурсов, дерево, поиск, сортировка, метки, закрепление и действия через функциональные клавиши. `t` включает дерево, `L` открывает timeline, `F9` подготавливает завершение процесса, `e` экспортирует JSON, `h` — HTML-отчёт.
+Главный экран сделан в парадигме `htop`: список процессов, индикаторы ресурсов, дерево, поиск, сортировка, метки, закрепление и действия через функциональные клавиши. `t` включает дерево, `L` открывает timeline, `F9` подготавливает завершение процесса, `Enter` открывает компактные сведения и сетевые порты процесса, `o` переводит во вкладку Ports с фильтром по PID, `e` экспортирует JSON, `h` — HTML-отчёт.
