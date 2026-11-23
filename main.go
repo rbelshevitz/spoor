@@ -805,7 +805,7 @@ func (u *ui) screenWidth() int {
 }
 
 func (u *ui) commandWidth() int {
-	w := u.screenWidth() - 84
+	w := u.screenWidth() - 88
 	if w < 18 {
 		return 18
 	}
@@ -1241,7 +1241,7 @@ func (u *ui) drawTimeline() {
 		return
 	}
 	fmt.Printf("  %s %s %s %s %s %s %s\n", headerCell("TIME", 9), headerCell("PROCS", 9), headerCell("PORTS", 9), headerCell("CPU PSI", 12), headerCell("MEM PSI", 12), headerCell("IO PSI", 12), headerCell("EVENT", 0))
-	fmt.Printf("  %s\n", dim("────────────────────────────────────────────────────────────────────────────"))
+	fmt.Printf("  %s\n", dim(rule(u.screenWidth()-2)))
 	start := 0
 	if len(u.timeline) > u.listHeight() {
 		start = len(u.timeline) - u.listHeight()
@@ -1251,24 +1251,25 @@ func (u *ui) drawTimeline() {
 		if point.New > 0 || point.Gone > 0 || point.Restarts > 0 {
 			event = accent(fmt.Sprintf("+%d / -%d / ↻%d", point.New, point.Gone, point.Restarts), yellow)
 		}
-		fmt.Printf("  %-9s %-9d %-9d %-12s %-12s %-12s %s\n", point.At.Format("15:04:05"), point.Processes, point.Ports, psiValue(point.CPU), psiValue(point.Memory), psiValue(point.IO), event)
+		fmt.Printf("  %-9s %-9d %-9d %s %s %s %s\n", point.At.Format("15:04:05"), point.Processes, point.Ports, psiValue(point.CPU), psiValue(point.Memory), psiValue(point.IO), event)
 	}
 	fmt.Printf("\n  %s\n", dim("Read a spike as contention: CPU PSI means runnable work waited, memory PSI means reclaim pressure, IO PSI means storage waited. ↻ means the PID was reused by a new process."))
 }
 
 func psiValue(value float64) string {
+	text := fmt.Sprintf("%-12s", fmt.Sprintf("%5.1f%%", value))
 	if value >= 10 {
-		return accent(fmt.Sprintf("%5.1f%%", value), red)
+		return accent(text, red)
 	}
 	if value >= 2 {
-		return accent(fmt.Sprintf("%5.1f%%", value), yellow)
+		return accent(text, yellow)
 	}
-	return fmt.Sprintf("%5.1f%%", value)
+	return text
 }
 func (u *ui) drawProcesses() {
 	displayRows := u.displayProcessRows()
 	fmt.Printf("  %s %s %s %s %s %s %s %s %s\n", headerCell("PIN", 3), headerCell("TAG", 3), headerCell("PID", 7), headerCell("USER", 10), headerCell("PROCESS", 22), headerCell("CPU", 15), headerCell("RSS", 8), headerCell("STATE", 10), headerCell("COMMAND", 0))
-	fmt.Printf("  %s\n", dim("────────────────────────────────────────────────────────────────────────────────────────"))
+	fmt.Printf("  %s\n", dim(rule(u.screenWidth()-2)))
 	end := u.offset + u.listHeight()
 	if end > len(displayRows) {
 		end = len(displayRows)
@@ -1332,22 +1333,22 @@ func treeName(row processDisplayRow) string {
 }
 
 func stateLabel(state string) string {
+	label := "? " + state
 	switch state {
 	case "R":
-		return "● RUN"
+		label = "● RUN"
 	case "S":
-		return "○ SLEEP"
+		label = "○ SLEEP"
 	case "I":
-		return "· IDLE-K"
+		label = "· IDLE-K"
 	case "D":
-		return "● BLOCK"
+		label = "● BLOCK"
 	case "T", "t":
-		return "Ⅱ STOP"
+		label = "Ⅱ STOP"
 	case "Z":
-		return "× ZOMB"
-	default:
-		return "? " + state
+		label = "× ZOMB"
 	}
+	return fmt.Sprintf("%-10s", label)
 }
 
 func (u *ui) drawPorts() {
@@ -1363,7 +1364,7 @@ func (u *ui) drawPorts() {
 		if i == u.cursor {
 			prefix = accent("▸ ", cyan)
 		}
-		fmt.Printf("%s%-8s %-24s %-14s %-8s %s\n", prefix, p.Proto, p.Local, portStateColor(p.State), p.PID, p.Process)
+		fmt.Printf("%s%-8s %-24s %s %-8s %s\n", prefix, p.Proto, p.Local, portStateColor(p.State), p.PID, p.Process)
 	}
 	fmt.Printf("\n  %s\n", dim(u.rangeText(len(rows))))
 }
@@ -1380,7 +1381,7 @@ func (u *ui) drawContainers() {
 		if i == u.cursor {
 			prefix = accent("▸ ", cyan)
 		}
-		fmt.Printf("%s%-10s %-18s %-26s %-24s %s\n", prefix, c.Runtime, c.Name, trim(c.Image, 26), containerStatusColor(c.Status), c.ID)
+		fmt.Printf("%s%-10s %-18s %-26s %s %s\n", prefix, c.Runtime, c.Name, trim(c.Image, 26), containerStatusColor(c.Status), c.ID)
 	}
 	fmt.Printf("\n  %s\n", dim(u.rangeText(len(rows))))
 }
@@ -1438,21 +1439,22 @@ func headerCell(label string, width int) string {
 }
 
 func stateColor(state string) string {
+	label := strings.TrimSpace(stateLabel(state))
 	switch state {
 	case "R":
-		return accent("● RUN", green)
+		return accent(stateLabel(state), green)
 	case "S":
-		return dim("○ SLEEP")
+		return dim(stateLabel(state))
 	case "I":
-		return dim("· IDLE-K")
+		return dim(stateLabel(state))
 	case "D":
-		return accent("● BLOCK", yellow)
+		return accent(stateLabel(state), yellow)
 	case "T", "t":
-		return accent("Ⅱ STOP", yellow)
+		return accent(stateLabel(state), yellow)
 	case "Z":
-		return accent("× ZOMB", red)
+		return accent(stateLabel(state), red)
 	default:
-		return accent("? "+state, magenta)
+		return accent(fmt.Sprintf("%-10s", label), magenta)
 	}
 }
 
@@ -1499,7 +1501,9 @@ func memoryColor(value string, bytes int64, sortedByMemory bool) string {
 }
 
 func portStateColor(state string) string {
-	switch state {
+	raw := state
+	state = fmt.Sprintf("%-14s", raw)
+	switch raw {
 	case "LISTEN":
 		return accent(state, green)
 	case "ESTABLISHED":
@@ -1512,14 +1516,15 @@ func portStateColor(state string) string {
 }
 
 func containerStatusColor(status string) string {
+	status = fmt.Sprintf("%-24s", trim(status, 24))
 	lower := strings.ToLower(status)
 	if strings.Contains(lower, "up") || strings.Contains(lower, "running") {
-		return accent(trim(status, 24), green)
+		return accent(status, green)
 	}
 	if strings.Contains(lower, "exit") || strings.Contains(lower, "dead") {
-		return accent(trim(status, 24), red)
+		return accent(status, red)
 	}
-	return trim(status, 24)
+	return status
 }
 func (u *ui) help() {
 	fmt.Print("\x1b[2J\x1b[H")
