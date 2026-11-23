@@ -1271,6 +1271,15 @@ func (u *ui) draw() {
 	if u.pinnedPID != 0 {
 		line += "  " + badge("PINNED", "PID "+strconv.Itoa(u.pinnedPID)+" · p unpin", yellow)
 	}
+	taggedCount := 0
+	for _, tagged := range u.tagged {
+		if tagged {
+			taggedCount++
+		}
+	}
+	if taggedCount > 0 {
+		line += "  " + badge("TAGGED", strconv.Itoa(taggedCount), magenta)
+	}
 	fmt.Printf("%s  %s\n", line, dim("updated "+u.last.Format("15:04:05")))
 	fmt.Printf("  %s\n", dim(fmt.Sprintf("PSI  cpu %4.1f%%   memory %4.1f%%   io %4.1f%%   · system contention, avg10", u.snap.Pressure.CPU, u.snap.Pressure.Memory, u.snap.Pressure.IO)))
 	u.drawMeters()
@@ -1470,7 +1479,13 @@ func psiValue(value float64) string {
 }
 func (u *ui) drawProcesses() {
 	displayRows := u.displayProcessRows()
-	fmt.Printf("    %s %s %s %s %s %s %s %s %s\n", headerCell("PIN", 3), headerCell("TAG", 3), headerCell("PID", 7), headerCell("USER", 10), headerCell("PROCESS", 22), headerCell("CPU", 15), headerCell("RSS", 8), headerCell("STATE", 10), headerCell("COMMAND", 0))
+	netByPID := make(map[int]int, len(u.snap.Ports))
+	for _, port := range u.snap.Ports {
+		if pid, err := strconv.Atoi(port.PID); err == nil {
+			netByPID[pid]++
+		}
+	}
+	fmt.Printf("    %s %s %s %s %s %s %s %s\n", headerCell("NET", 3), headerCell("PID", 7), headerCell("USER", 10), headerCell("PROCESS", 22), headerCell("CPU", 15), headerCell("RSS", 8), headerCell("STATE", 10), headerCell("COMMAND", 0))
 	fmt.Printf("  %s\n", dim(rule(u.screenWidth()-2)))
 	end := u.offset + u.listHeight()
 	if end > len(displayRows) {
@@ -1481,13 +1496,10 @@ func (u *ui) drawProcesses() {
 		p := row.Process
 		sel := n == u.cursor
 		name := trim(treeName(row), 22)
-		pin := ""
-		if u.pinnedPID == p.PID {
-			pin = "PIN"
-		}
-		tag := ""
-		if u.tagged[p.PID] {
-			tag = "TAG"
+		net := networkIndicator(netByPID[p.PID])
+		netPlain := ""
+		if netByPID[p.PID] > 0 {
+			netPlain = "↗"
 		}
 		if sel {
 			// The whole selected row is highlighted; a colored arrow alone
@@ -1496,13 +1508,13 @@ func (u *ui) drawProcesses() {
 			memory := fmt.Sprintf("%-8s", p.RSS)
 			// Keep two cells reserved for the selector so every numeric column
 			// stays fixed when the cursor moves.
-			fmt.Printf("\x1b[1;7m  ▸ %-3s %-3s %-7d %-10s %-22s %s %s %s %s\x1b[0m\n", pin, tag, p.PID, p.User, name, cpu, memory, stateLabel(p.State), trim(p.Cmd, u.commandWidth()))
+			fmt.Printf("\x1b[1;7m  ▸ %-3s %-7d %-10s %-22s %s %s %s %s\x1b[0m\n", netPlain, p.PID, p.User, name, cpu, memory, stateLabel(p.State), trim(p.Cmd, u.commandWidth()))
 			continue
 		}
 		state := stateColor(p.State)
 		memory := memoryColor(p.RSS, p.RSSBytes, u.sortBy == 1)
 		cpu := cpuColor(p.CPUPercent)
-		fmt.Printf("    %-3s %-3s %-7d %-10s %-22s %s %s %s %s\n", pin, tag, p.PID, p.User, name, cpu, memory, state, dim(trim(p.Cmd, u.commandWidth())))
+		fmt.Printf("    %s %-7d %-10s %-22s %s %s %s %s\n", net, p.PID, p.User, name, cpu, memory, state, dim(trim(p.Cmd, u.commandWidth())))
 	}
 	if u.diff {
 		newCount, goneCount, restartCount := diffCounts(u.base.Processes, u.snap.Processes)
@@ -1521,6 +1533,13 @@ func treeName(row processDisplayRow) string {
 		return row.Name
 	}
 	return strings.Repeat("  ", row.Depth-1) + "└─ " + row.Name
+}
+
+func networkIndicator(socketCount int) string {
+	if socketCount == 0 {
+		return "   "
+	}
+	return accent("↗  ", cyan)
 }
 
 func stateLabel(state string) string {
