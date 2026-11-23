@@ -126,15 +126,15 @@ Implemented today:
 
 - **Causal path:** process → parent → supervisor/cgroup/container → socket.
 - **Process context:** show the selected process's cgroup boundary, memory trend, ancestry, and visible TCP sockets.
+- **Blast radius:** show the selected process's descendants and visible TCP sockets.
+- **Evidence ledger:** label facts as confirmed or unknown and include their `/proc` source.
 - **PID identity radar:** detect process identity changes and PID reuse.
 - **Pressure-aware view:** put PSI beside process changes to explain why a machine feels stuck.
+- **Repro bundle:** export redacted JSON, HTML, and Markdown incident files.
 
 Planned extensions:
 
-- **Blast radius:** show the sockets and descendants affected by a selected process.
-- **Evidence ledger:** distinguish confirmed `/proc` facts from inferred relationships.
 - **Counterfactual actions:** before stopping a process, show what may disappear and which supervisor may restart it.
-- **Repro bundle:** export JSON plus a redacted Markdown incident summary.
 
 ## Architecture
 
