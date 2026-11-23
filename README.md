@@ -23,7 +23,7 @@ The detail view connects:
 - resident-memory growth or shrink rate;
 - process identity changes and restart events.
 
-`restart radar` compares the Linux process `starttime` rather than relying only on the numeric PID. It can therefore detect a new process after PID reuse.
+The **PID identity radar** compares Linux process `starttime` rather than relying only on the numeric PID. It reports a confirmed identity change when the same numeric PID belongs to a different process between snapshots. This is a PID-reuse signal; it does not claim to know why a service restarted.
 
 ## Interface
 
@@ -122,7 +122,7 @@ Implemented today:
 
 - **Causal path:** process → parent → supervisor/cgroup/container → socket.
 - **Process context:** show the selected process's cgroup boundary, memory trend, ancestry, and visible TCP sockets.
-- **Restart radar:** detect process identity changes and PID reuse.
+- **PID identity radar:** detect process identity changes and PID reuse.
 - **Pressure-aware view:** put PSI beside process changes to explain why a machine feels stuck.
 
 Planned extensions:

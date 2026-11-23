@@ -566,7 +566,7 @@ func (u *ui) applySnapshot(snapshot Snapshot) {
 		newCount, goneCount, restartCount := diffCounts(u.snap.Processes, snapshot.Processes)
 		u.timeline = append(u.timeline, TimelinePoint{At: snapshot.At, Processes: len(snapshot.Processes), Ports: len(snapshot.Ports), CPU: snapshot.Pressure.CPU, Memory: snapshot.Pressure.Memory, IO: snapshot.Pressure.IO, New: newCount, Gone: goneCount, Restarts: restartCount})
 		if restartCount > 0 {
-			u.status = fmt.Sprintf("restart radar: %d process identity change(s)", restartCount)
+			u.status = fmt.Sprintf("PID identity radar: %d PID reuse event(s)", restartCount)
 		}
 		if len(u.timeline) > 60 {
 			u.timeline = u.timeline[len(u.timeline)-60:]
@@ -1235,6 +1235,7 @@ func formatUptime(seconds float64) string {
 func (u *ui) drawTimeline() {
 	fmt.Printf("  %s  %s\n", accent("TIMELINE", yellow), dim("history of the live snapshots"))
 	fmt.Printf("  %s\n", dim("Each row is one refresh. Use it to see whether process/socket counts or system pressure changed before an incident."))
+	fmt.Printf("  %s\n", dim("RADAR  ↻ PID reuse = the same numeric PID now belongs to a different process identity."))
 	fmt.Printf("  %s\n\n", dim("+new / -exited = process identities changed · PSI = time stalled, not CPU utilization · L returns to live"))
 	if len(u.timeline) == 0 {
 		fmt.Printf("  %s\n", dim("Collecting baseline… the next refresh will create the first history point."))
@@ -1253,7 +1254,7 @@ func (u *ui) drawTimeline() {
 		}
 		fmt.Printf("  %-9s %-9d %-9d %s %s %s %s\n", point.At.Format("15:04:05"), point.Processes, point.Ports, psiValue(point.CPU), psiValue(point.Memory), psiValue(point.IO), event)
 	}
-	fmt.Printf("\n  %s\n", dim("Read a spike as contention: CPU PSI means runnable work waited, memory PSI means reclaim pressure, IO PSI means storage waited. ↻ means the PID was reused by a new process."))
+	fmt.Printf("\n  %s\n", dim("Read a spike as contention: CPU PSI means runnable work waited, memory PSI means reclaim pressure, IO PSI means storage waited. ↻ is a confirmed PID identity change, not a guess about why it restarted."))
 }
 
 func psiValue(value float64) string {
@@ -1564,7 +1565,7 @@ func (u *ui) help() {
 	printHelpRow("F6", "cycle sort order")
 	printHelpRow("i", "show/hide idle kernel threads")
 	printHelpRow("d", "diff against the baseline captured at startup")
-	printHelpRow("L", "open timeline: history of process/port counts, restarts and PSI")
+	printHelpRow("L", "open timeline: process/port counts, PID identity changes and PSI")
 	printHelpRow("r", "request a fresh snapshot without blocking the UI")
 	printHelpRow("e", "export the current snapshot to spoor-snapshot.json")
 	printHelpRow("h", "export a human-readable report to spoor-report.html")
