@@ -1240,7 +1240,7 @@ func (u *ui) drawTimeline() {
 		fmt.Printf("  %s\n", dim("Collecting baseline… the next refresh will create the first history point."))
 		return
 	}
-	fmt.Printf("  %-9s %-9s %-9s %-12s %-12s %-12s %s\n", dim("TIME"), dim("PROCS"), dim("PORTS"), dim("CPU PSI"), dim("MEM PSI"), dim("IO PSI"), dim("EVENT"))
+	fmt.Printf("  %s %s %s %s %s %s %s\n", headerCell("TIME", 9), headerCell("PROCS", 9), headerCell("PORTS", 9), headerCell("CPU PSI", 12), headerCell("MEM PSI", 12), headerCell("IO PSI", 12), headerCell("EVENT", 0))
 	fmt.Printf("  %s\n", dim("────────────────────────────────────────────────────────────────────────────"))
 	start := 0
 	if len(u.timeline) > u.listHeight() {
@@ -1267,7 +1267,7 @@ func psiValue(value float64) string {
 }
 func (u *ui) drawProcesses() {
 	displayRows := u.displayProcessRows()
-	fmt.Printf("  %-4s %-4s %-7s %-10s %-22s %-14s %-8s %-10s %s\n", dim("PIN"), dim("TAG"), dim("PID"), dim("USER"), dim("PROCESS"), dim("CPU"), dim("RSS"), dim("STATE"), dim("COMMAND"))
+	fmt.Printf("  %s %s %s %s %s %s %s %s %s\n", headerCell("PIN", 3), headerCell("TAG", 3), headerCell("PID", 7), headerCell("USER", 10), headerCell("PROCESS", 22), headerCell("CPU", 15), headerCell("RSS", 8), headerCell("STATE", 10), headerCell("COMMAND", 0))
 	fmt.Printf("  %s\n", dim("────────────────────────────────────────────────────────────────────────────────────────"))
 	end := u.offset + u.listHeight()
 	if end > len(displayRows) {
@@ -1352,7 +1352,7 @@ func stateLabel(state string) string {
 
 func (u *ui) drawPorts() {
 	rows := u.portRows()
-	fmt.Printf("  %-8s %-24s %-14s %-8s %s\n", dim("PROTO"), dim("LOCAL"), dim("STATE"), dim("PID"), dim("PROCESS"))
+	fmt.Printf("  %s %s %s %s %s\n", headerCell("PROTO", 8), headerCell("LOCAL", 24), headerCell("STATE", 14), headerCell("PID", 8), headerCell("PROCESS", 0))
 	end := u.offset + u.listHeight()
 	if end > len(rows) {
 		end = len(rows)
@@ -1369,7 +1369,7 @@ func (u *ui) drawPorts() {
 }
 func (u *ui) drawContainers() {
 	rows := u.containerRows()
-	fmt.Printf("  %-10s %-18s %-26s %-24s %s\n", dim("RUNTIME"), dim("NAME"), dim("IMAGE"), dim("STATUS"), dim("ID"))
+	fmt.Printf("  %s %s %s %s %s\n", headerCell("RUNTIME", 10), headerCell("NAME", 18), headerCell("IMAGE", 26), headerCell("STATUS", 24), headerCell("ID", 0))
 	end := u.offset + u.listHeight()
 	if end > len(rows) {
 		end = len(rows)
@@ -1428,6 +1428,13 @@ func (u *ui) drawDetail() {
 
 func badge(label, value, color string) string {
 	return accent(" "+label+" ", color) + " " + value
+}
+
+func headerCell(label string, width int) string {
+	if width > 0 {
+		label = fmt.Sprintf("%-*s", width, label)
+	}
+	return dim(label)
 }
 
 func stateColor(state string) string {
